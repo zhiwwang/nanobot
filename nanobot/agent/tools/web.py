@@ -1,38 +1,42 @@
 """Web tools: web_search and web_fetch."""
+# 网络工具模块 - 提供网络搜索和网页获取功能
 
-import html
-import json
-import os
-import re
-from typing import Any
-from urllib.parse import urlparse
+import html  # HTML 实体解码
+import json  # JSON 序列化
+import os  # 操作系统接口（获取环境变量）
+import re  # 正则表达式
+from typing import Any  # 类型提示
+from urllib.parse import urlparse  # URL 解析
 
-import httpx
-from loguru import logger
+import httpx  # 异步 HTTP 客户端
+from loguru import logger  # 结构化日志记录
 
-from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.base import Tool  # 导入工具基类
 
-# Shared constants
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"
-MAX_REDIRECTS = 5  # Limit redirects to prevent DoS attacks
+# 共享常量
+USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36"  # 用户代理字符串
+MAX_REDIRECTS = 5  # 最大重定向次数，防止 DoS 攻击
 
 
 def _strip_tags(text: str) -> str:
     """Remove HTML tags and decode entities."""
-    text = re.sub(r'<script[\s\S]*?</script>', '', text, flags=re.I)
-    text = re.sub(r'<style[\s\S]*?</style>', '', text, flags=re.I)
-    text = re.sub(r'<[^>]+>', '', text)
-    return html.unescape(text).strip()
+    # 移除 HTML 标签并解码实体
+    text = re.sub(r'<script[\s\S]*?</script>', '', text, flags=re.I)  # 移除 script 标签
+    text = re.sub(r'<style[\s\S]*?</style>', '', text, flags=re.I)  # 移除 style 标签
+    text = re.sub(r'<[^>]+>', '', text)  # 移除所有 HTML 标签
+    return html.unescape(text).strip()  # 解码 HTML 实体并去除空白
 
 
 def _normalize(text: str) -> str:
     """Normalize whitespace."""
-    text = re.sub(r'[ \t]+', ' ', text)
-    return re.sub(r'\n{3,}', '\n\n', text).strip()
+    # 规范化空白字符
+    text = re.sub(r'[ \t]+', ' ', text)  # 多个空格/制表符替换为单个空格
+    return re.sub(r'\n{3,}', '\n\n', text).strip()  # 多个换行替换为两个
 
 
 def _validate_url(url: str) -> tuple[bool, str]:
     """Validate URL: must be http(s) with valid domain."""
+    # 验证 URL：必须是 http(s) 且有有效域名
     try:
         p = urlparse(url)
         if p.scheme not in ('http', 'https'):
@@ -46,6 +50,7 @@ def _validate_url(url: str) -> tuple[bool, str]:
 
 class WebSearchTool(Tool):
     """Search the web using Brave Search API."""
+    # 网络搜索工具 - 使用 Brave Search API
 
     name = "web_search"
     description = "Search the web. Returns titles, URLs, and snippets."
@@ -59,13 +64,14 @@ class WebSearchTool(Tool):
     }
 
     def __init__(self, api_key: str | None = None, max_results: int = 5, proxy: str | None = None):
-        self._init_api_key = api_key
-        self.max_results = max_results
-        self.proxy = proxy
+        self._init_api_key = api_key  # 初始 API 密钥
+        self.max_results = max_results  # 最大结果数
+        self.proxy = proxy  # 代理设置
 
     @property
     def api_key(self) -> str:
         """Resolve API key at call time so env/config changes are picked up."""
+        # 在调用时解析 API 密钥，以便环境/配置更改被捕获
         return self._init_api_key or os.environ.get("BRAVE_API_KEY", "")
 
     async def execute(self, query: str, count: int | None = None, **kwargs: Any) -> str:
@@ -77,7 +83,7 @@ class WebSearchTool(Tool):
             )
 
         try:
-            n = min(max(count or self.max_results, 1), 10)
+            n = min(max(count or self.max_results, 1), 10)  # 确定结果数量（1-10）
             logger.debug("WebSearch: {}", "proxy enabled" if self.proxy else "direct connection")
             async with httpx.AsyncClient(proxy=self.proxy) as client:
                 r = await client.get(
@@ -88,7 +94,7 @@ class WebSearchTool(Tool):
                 )
                 r.raise_for_status()
 
-            results = r.json().get("web", {}).get("results", [])[:n]
+            results = r.json().get("web", {}).get("results", [])[:n]  # 获取结果
             if not results:
                 return f"No results for: {query}"
 
@@ -108,6 +114,7 @@ class WebSearchTool(Tool):
 
 class WebFetchTool(Tool):
     """Fetch and extract content from a URL using Readability."""
+    # 网页获取工具 - 使用 Readability 提取内容
 
     name = "web_fetch"
     description = "Fetch URL and extract readable content (HTML → markdown/text)."
@@ -122,11 +129,11 @@ class WebFetchTool(Tool):
     }
 
     def __init__(self, max_chars: int = 50000, proxy: str | None = None):
-        self.max_chars = max_chars
-        self.proxy = proxy
+        self.max_chars = max_chars  # 最大字符数
+        self.proxy = proxy  # 代理设置
 
     async def execute(self, url: str, extractMode: str = "markdown", maxChars: int | None = None, **kwargs: Any) -> str:
-        from readability import Document
+        from readability import Document  # 延迟导入
 
         max_chars = maxChars or self.max_chars
         is_valid, error_msg = _validate_url(url)
@@ -147,13 +154,16 @@ class WebFetchTool(Tool):
             ctype = r.headers.get("content-type", "")
 
             if "application/json" in ctype:
+                # JSON 内容：格式化输出
                 text, extractor = json.dumps(r.json(), indent=2, ensure_ascii=False), "json"
             elif "text/html" in ctype or r.text[:256].lower().startswith(("<!doctype", "<html")):
+                # HTML 内容：使用 Readability 提取
                 doc = Document(r.text)
                 content = self._to_markdown(doc.summary()) if extractMode == "markdown" else _strip_tags(doc.summary())
                 text = f"# {doc.title()}\n\n{content}" if doc.title() else content
                 extractor = "readability"
             else:
+                # 其他内容：原样返回
                 text, extractor = r.text, "raw"
 
             truncated = len(text) > max_chars
@@ -170,7 +180,8 @@ class WebFetchTool(Tool):
 
     def _to_markdown(self, html: str) -> str:
         """Convert HTML to markdown."""
-        # Convert links, headings, lists before stripping tags
+        # 将 HTML 转换为 Markdown
+        # 在移除标签前转换链接、标题、列表
         text = re.sub(r'<a\s+[^>]*href=["\']([^"\']+)["\'][^>]*>([\s\S]*?)</a>',
                       lambda m: f'[{_strip_tags(m[2])}]({m[1]})', html, flags=re.I)
         text = re.sub(r'<h([1-6])[^>]*>([\s\S]*?)</h\1>',

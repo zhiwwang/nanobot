@@ -1,7 +1,8 @@
 """Base class for agent tools."""
+# 工具基类模块 - 定义所有工具的抽象基类
 
-from abc import ABC, abstractmethod
-from typing import Any
+from abc import ABC, abstractmethod  # 抽象基类和抽象方法装饰器
+from typing import Any  # 类型提示：任意类型
 
 
 class Tool(ABC):
@@ -11,171 +12,108 @@ class Tool(ABC):
     Tools are capabilities that the agent can use to interact with
     the environment, such as reading files, executing commands, etc.
     """
+    # 工具抽象基类 - 所有工具必须继承此类
+    # 工具是 Agent 与环境交互的能力，如读取文件、执行命令等
 
+    # 类型映射：JSON Schema 类型 -> Python 类型
+    # 用于验证工具参数
     _TYPE_MAP = {
-        "string": str,
-        "integer": int,
-        "number": (int, float),
-        "boolean": bool,
-        "array": list,
-        "object": dict,
+        "string": str,      # JSON string -> Python str
+        "integer": int,     # JSON integer -> Python int
+        "number": (int, float),  # JSON number -> Python int 或 float
+        "boolean": bool,    # JSON boolean -> Python bool
+        "array": list,      # JSON array -> Python list
+        "object": dict,     # JSON object -> Python dict
     }
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Tool name used in function calls."""
-        pass
+        """Tool name — must be unique in the registry."""
+        # 工具名称 - 必须在注册表中唯一
+        # 子类必须实现此属性
+        ...
 
     @property
     @abstractmethod
     def description(self) -> str:
-        """Description of what the tool does."""
-        pass
+        """Tool description shown to the LLM."""
+        # 工具描述 - 显示给 LLM，说明工具的用途
+        # 子类必须实现此属性
+        ...
 
     @property
     @abstractmethod
     def parameters(self) -> dict[str, Any]:
-        """JSON Schema for tool parameters."""
-        pass
+        """
+        JSON Schema for tool parameters.
+        
+        Example:
+            {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path"}
+                },
+                "required": ["path"]
+            }
+        """
+        # 工具参数的 JSON Schema 定义
+        # 用于告诉 LLM 如何调用此工具
+        # 子类必须实现此属性
+        ...
 
     @abstractmethod
     async def execute(self, **kwargs: Any) -> str:
         """
-        Execute the tool with given parameters.
-
-        Args:
-            **kwargs: Tool-specific parameters.
-
-        Returns:
-            String result of the tool execution.
+        Execute the tool with the given arguments.
+        
+        Returns a string result (success message or error).
         """
-        pass
+        # 执行工具
+        # kwargs: 工具参数
+        # 返回字符串结果（成功消息或错误信息）
+        # 子类必须实现此方法
+        ...
 
-    def cast_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Apply safe schema-driven casts before validation."""
-        schema = self.parameters or {}
-        if schema.get("type", "object") != "object":
-            return params
-
-        return self._cast_object(params, schema)
-
-    def _cast_object(self, obj: Any, schema: dict[str, Any]) -> dict[str, Any]:
-        """Cast an object (dict) according to schema."""
-        if not isinstance(obj, dict):
-            return obj
-
-        props = schema.get("properties", {})
-        result = {}
-
-        for key, value in obj.items():
-            if key in props:
-                result[key] = self._cast_value(value, props[key])
-            else:
-                result[key] = value
-
-        return result
-
-    def _cast_value(self, val: Any, schema: dict[str, Any]) -> Any:
-        """Cast a single value according to schema."""
-        target_type = schema.get("type")
-
-        if target_type == "boolean" and isinstance(val, bool):
-            return val
-        if target_type == "integer" and isinstance(val, int) and not isinstance(val, bool):
-            return val
-        if target_type in self._TYPE_MAP and target_type not in ("boolean", "integer", "array", "object"):
-            expected = self._TYPE_MAP[target_type]
-            if isinstance(val, expected):
-                return val
-
-        if target_type == "integer" and isinstance(val, str):
-            try:
-                return int(val)
-            except ValueError:
-                return val
-
-        if target_type == "number" and isinstance(val, str):
-            try:
-                return float(val)
-            except ValueError:
-                return val
-
-        if target_type == "string":
-            return val if val is None else str(val)
-
-        if target_type == "boolean" and isinstance(val, str):
-            val_lower = val.lower()
-            if val_lower in ("true", "1", "yes"):
-                return True
-            if val_lower in ("false", "0", "no"):
-                return False
-            return val
-
-        if target_type == "array" and isinstance(val, list):
-            item_schema = schema.get("items")
-            return [self._cast_value(item, item_schema) for item in val] if item_schema else val
-
-        if target_type == "object" and isinstance(val, dict):
-            return self._cast_object(val, schema)
-
-        return val
-
-    def validate_params(self, params: dict[str, Any]) -> list[str]:
-        """Validate tool parameters against JSON schema. Returns error list (empty if valid)."""
-        if not isinstance(params, dict):
-            return [f"parameters must be an object, got {type(params).__name__}"]
-        schema = self.parameters or {}
-        if schema.get("type", "object") != "object":
-            raise ValueError(f"Schema must be object type, got {schema.get('type')!r}")
-        return self._validate(params, {**schema, "type": "object"}, "")
-
-    def _validate(self, val: Any, schema: dict[str, Any], path: str) -> list[str]:
-        t, label = schema.get("type"), path or "parameter"
-        if t == "integer" and (not isinstance(val, int) or isinstance(val, bool)):
-            return [f"{label} should be integer"]
-        if t == "number" and (
-            not isinstance(val, self._TYPE_MAP[t]) or isinstance(val, bool)
-        ):
-            return [f"{label} should be number"]
-        if t in self._TYPE_MAP and t not in ("integer", "number") and not isinstance(val, self._TYPE_MAP[t]):
-            return [f"{label} should be {t}"]
-
-        errors = []
-        if "enum" in schema and val not in schema["enum"]:
-            errors.append(f"{label} must be one of {schema['enum']}")
-        if t in ("integer", "number"):
-            if "minimum" in schema and val < schema["minimum"]:
-                errors.append(f"{label} must be >= {schema['minimum']}")
-            if "maximum" in schema and val > schema["maximum"]:
-                errors.append(f"{label} must be <= {schema['maximum']}")
-        if t == "string":
-            if "minLength" in schema and len(val) < schema["minLength"]:
-                errors.append(f"{label} must be at least {schema['minLength']} chars")
-            if "maxLength" in schema and len(val) > schema["maxLength"]:
-                errors.append(f"{label} must be at most {schema['maxLength']} chars")
-        if t == "object":
-            props = schema.get("properties", {})
-            for k in schema.get("required", []):
-                if k not in val:
-                    errors.append(f"missing required {path + '.' + k if path else k}")
-            for k, v in val.items():
-                if k in props:
-                    errors.extend(self._validate(v, props[k], path + "." + k if path else k))
-        if t == "array" and "items" in schema:
-            for i, item in enumerate(val):
-                errors.extend(
-                    self._validate(item, schema["items"], f"{path}[{i}]" if path else f"[{i}]")
-                )
-        return errors
-
-    def to_schema(self) -> dict[str, Any]:
-        """Convert tool to OpenAI function schema format."""
+    def get_definition(self) -> dict[str, Any]:
+        """Return the OpenAI-style tool definition."""
+        # 返回 OpenAI 格式的工具定义
+        # 用于 function calling API
         return {
-            "type": "function",
+            "type": "function",  # 工具类型：函数
             "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
+                "name": self.name,           # 函数名
+                "description": self.description,  # 函数描述
+                "parameters": self.parameters,    # 参数定义
             },
         }
+
+    def validate_args(self, args: dict[str, Any]) -> tuple[bool, str]:
+        """
+        Validate arguments against the parameter schema.
+        
+        Returns (is_valid, error_message).
+        """
+        # 根据参数模式验证参数
+        # args: 参数字典
+        # 返回 (是否有效, 错误信息)
+        
+        schema = self.parameters  # 获取参数模式
+        
+        # 检查必需参数
+        required = schema.get("required", [])  # 获取必需参数列表
+        for param in required:
+            if param not in args:  # 如果缺少必需参数
+                return False, f"Missing required parameter: {param}"
+        
+        # 检查参数类型
+        properties = schema.get("properties", {})  # 获取参数属性定义
+        for key, value in args.items():
+            if key in properties:  # 如果参数在定义中
+                expected_type = properties[key].get("type")  # 获取期望类型
+                if expected_type and expected_type in self._TYPE_MAP:
+                    python_type = self._TYPE_MAP[expected_type]  # 转换为 Python 类型
+                    if not isinstance(value, python_type):  # 类型不匹配
+                        return False, f"Parameter '{key}' should be {expected_type}"
+        
+        return True, ""  # 验证通过
